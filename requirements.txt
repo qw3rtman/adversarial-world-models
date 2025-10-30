@@ -1,0 +1,39 @@
+--extra-index-url https://download.pytorch.org/whl/cu122
+
+# Core ML and Data Science
+numpy
+scipy
+pillow
+matplotlib
+scikit-learn
+h5py
+opencv-python
+ffmpeg-python
+imageio
+hydra-core
+hydra-submitit-launcher
+submitit
+jupyterlab
+
+# ML Frameworks
+accelerate
+torch
+torchvision
+torchaudio
+tensorflow[and-cuda]
+
+# Robotics and Simulation
+d4rl==1.1
+dm-control
+wandb
+einops
+decord
+moviepy
+gym
+pybullet
+
+# for plan.py
+pymunk~=6.0.0
+pygame
+shapely
+scikit-image

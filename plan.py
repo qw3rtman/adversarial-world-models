@@ -30,6 +30,7 @@ ALL_MODEL_KEYS = [
     "decoder",
     "proprio_encoder",
     "action_encoder",
+    "initnet",
 ]
 
 def planning_main_in_dir(working_dir, cfg_dict):
@@ -191,7 +192,7 @@ class PlanWorkspace:
         from planning.mpc import MPCPlanner
         if isinstance(self.planner, MPCPlanner):
             self.planner.sub_planner.horizon = cfg_dict["goal_H"]
-            self.planner.n_taken_actions = cfg_dict["goal_H"]
+            self.planner.n_taken_actions = cfg_dict["planner"]["n_taken_actions"]
         else:
             self.planner.horizon = cfg_dict["goal_H"]
 
@@ -268,9 +269,9 @@ class PlanWorkspace:
 
         # Check if any trajectory is long enough
         valid_traj = [
-            self.dset[i][0]["visual"].shape[0]
+            self.dset[i][1]["visual"].shape[0]
             for i in range(len(self.dset))
-            if self.dset[i][0]["visual"].shape[0] >= traj_len
+            if self.dset[i][1]["visual"].shape[0] >= traj_len
         ]
         if len(valid_traj) == 0:
             raise ValueError("No trajectory in the dataset is long enough.")
@@ -280,7 +281,7 @@ class PlanWorkspace:
             max_offset = -1
             while max_offset < 0:  # filter out traj that are not long enough
                 traj_id = random.randint(0, len(self.dset) - 1)
-                obs, act, state, e_info = self.dset[traj_id]
+                _, obs, act, state, e_info = self.dset[traj_id]
                 max_offset = obs["visual"].shape[0] - traj_len
             state = state.numpy()
             offset = random.randint(0, max_offset)
@@ -327,14 +328,18 @@ class PlanWorkspace:
             actions_init = self.gt_actions
         else:
             actions_init = None
+
+        # import IPython; IPython.embed()
         actions, action_len = self.planner.plan(
             obs_0=self.obs_0,
             obs_g=self.obs_g,
             actions=actions_init,
+            actions_gt=self.gt_actions
         )
-        logs, successes, _, _ = self.evaluator.eval_actions(
+        logs, successes, e_obses, e_states = self.evaluator.eval_actions(
             actions.detach(), action_len, save_video=True, filename="output_final"
         )
+        #import IPython; IPython.embed()
         logs = {f"final_eval/{k}": v for k, v in logs.items()}
         self.wandb_run.log(logs)
         logs_entry = {
@@ -350,9 +355,9 @@ class PlanWorkspace:
         return logs
 
 
-def load_ckpt(snapshot_path, device):
+def load_ckpt(snapshot_path, device, to_load=['all']):
     with snapshot_path.open("rb") as f:
-        payload = torch.load(f, map_location=device)
+        payload = torch.load(f, map_location=device, weights_only=False)
     loaded_keys = []
     result = {}
     for k, v in payload.items():
@@ -363,11 +368,16 @@ def load_ckpt(snapshot_path, device):
     return result
 
 
-def load_model(model_ckpt, train_cfg, num_action_repeat, device):
+def load_model(model_ckpt, initnet_ckpt, train_cfg, num_action_repeat, device):
     result = {}
     if model_ckpt.exists():
         result = load_ckpt(model_ckpt, device)
         print(f"Resuming from epoch {result['epoch']}: {model_ckpt}")
+
+    initnet = None
+    if initnet_ckpt is not None and initnet_ckpt.exists():
+        initnet = load_ckpt(initnet_ckpt, device, to_load=['initnet'])
+        initnet = initnet["initnet"]
 
     if "encoder" not in result:
         result["encoder"] = hydra.utils.instantiate(
@@ -400,6 +410,7 @@ def load_model(model_ckpt, train_cfg, num_action_repeat, device):
         action_encoder=result["action_encoder"],
         predictor=result["predictor"],
         decoder=result["decoder"],
+        initnet=initnet,
         proprio_dim=train_cfg.proprio_emb_dim,
         action_dim=train_cfg.action_emb_dim,
         concat_dim=train_cfg.concat_dim,
@@ -456,7 +467,9 @@ def planning_main(cfg_dict):
     model_ckpt = (
         Path(model_path) / "checkpoints" / f"model_{cfg_dict['model_epoch']}.pth"
     )
-    model = load_model(model_ckpt, model_cfg, num_action_repeat, device=device)
+
+    initnet_ckpt = Path(cfg_dict["init_ckpt_path"]) if cfg_dict["use_initnet"] else None
+    model = load_model(model_ckpt, initnet_ckpt, model_cfg, num_action_repeat, device=device)
 
     # use dummy vector env for wall and deformable envs
     if model_cfg.env.name == "wall" or model_cfg.env.name == "deformable_env":
